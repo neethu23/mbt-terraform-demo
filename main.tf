@@ -5,12 +5,17 @@ terraform {
       version = "~> 5.0"
     }
   }
-
+      backend "s3" {
+      bucket = "demo-statefile-s3"
+      key    = "terraform-state.tfstate"
+      region = "us-east-2"
+    }
+   
 }
 
 # Configure the AWS Provider
 provider "aws" {
-  region = "us-east-2"
+  region = var.region
   #profile = "Neethu"
 }
 
@@ -21,11 +26,11 @@ resource "aws_vpc" "demo-vpc" {
   cidr_block = "10.10.0.0/16"
 
   tags = {
-    Name = "Demo-VPC"
+    Name = "${var.name}-vpc" 
   }
 }
 
-# creating the subnets
+ #creating the subnets
 
 resource "aws_subnet" "demo-subnet-public-2a" {
   vpc_id                  = aws_vpc.demo-vpc.id
@@ -34,7 +39,7 @@ resource "aws_subnet" "demo-subnet-public-2a" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "demo-subnet-public-2a"
+    Name = "${var.name}-subnet-public-2a"
   }
 }
 
@@ -45,7 +50,7 @@ resource "aws_subnet" "demo-subnet-public-2b" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "demo-subnet-public-2b"
+    Name = "${var.name}-subnet-public-2b"
   }
 }
 
@@ -55,7 +60,7 @@ resource "aws_subnet" "demo-subnet-private-2a" {
   availability_zone = "us-east-2a"
 
   tags = {
-    Name = "demo-subnet-private-2a"
+    Name = "${var.name}-subnet-private-2a"
   }
 }
 
@@ -65,7 +70,7 @@ resource "aws_subnet" "demo-subnet-private-2b" {
   availability_zone = "us-east-2b"
 
   tags = {
-    Name = "demo-subnet-private-2b"
+    Name = "${var.name}-subnet-private-2b"
   }
 }
 
@@ -75,7 +80,7 @@ resource "aws_internet_gateway" "demo-IGW" {
   vpc_id = aws_vpc.demo-vpc.id
 
   tags = {
-    Name = "demo-internet-GW"
+    Name = "${var.name}-internet-GW"
   }
 }
 
@@ -90,7 +95,7 @@ resource "aws_route_table" "demo-public-RT" {
   }
 
   tags = {
-    Name = "demo-public-RT"
+    Name = "${var.name}-public-RT"
   }
 }
 
@@ -99,7 +104,7 @@ resource "aws_route_table" "demo-private-RT" {
   vpc_id = aws_vpc.demo-vpc.id
 
   tags = {
-    Name = "demo-private-RT"
+    Name = "${var.name}-private-RT"
   }
 }
 
@@ -192,20 +197,75 @@ resource "aws_key_pair" "demo-key" {
   public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCnWfXdWECxjE2in1OnLRPMT2CHRk/Z1LQlrPTMl3EdoxeowRwA3jlmVEWjkg1+Q0DShqMUNR2uFP4J64Il2R6/cJk8cDCIXmAoiI0f6klxAM3XkwRirhr4Qd8N0Ujqc+NxABUo7CK6lEuQ9UIFBXeaWl9VzSLPoxFIU1DY8xnjAjqAFrIkTmZ6aG+827h5CiB9NwoV345C7d3LWlQPiur2NtkT0aglwSxzIeyIEx3p9C/msYTvBijBojxnbpeUfGVi8q4B1BbUZHCRWynNvkMDNH01UlUJFUuxAMk3nF/ClP3VqBx7fHWr6d9MzhCWv2jAq9/lyRMpRVh3euNWwKrNl1Ld5XsT6nB8fHCbjB++0mFUNoZN2OrbJNvNJBe2TzS8/YO067gq5TdUrxPGqB42GTxKoSNEiDmAcZD6ogPhj3pr3u5V6cpb0/0yd7L2xTd8VYBx5jFp9deHrCY+GMqcp5Y/ln4JnARyCdWeRbvTvSI5esoYhokMkQ/ok77llHM= ssankar1@ussd-ofcmc6821.lan"
 }
 
-#creating the EC2 server
 
-resource "aws_instance" "demo-instance-1" {
-  ami           = "ami-0862be96e41dcbf74"
-  instance_type = "t2.micro"
-  subnet_id     = aws_subnet.demo-subnet-public-2a.id
-  key_name      = aws_key_pair.demo-key.id
-  #associate_public_ip_address = true
+# ASG
+
+#create the lauch template
+resource "aws_launch_template" "demo_launch_template" {
+  name = "${var.name}_launch_template"
+  image_id = "ami-0862be96e41dcbf74"
+  instance_type = var.instance_type
+  key_name = aws_key_pair.demo-key.id
   vpc_security_group_ids = [aws_security_group.allow_22.id, aws_security_group.allow_80.id]
-  user_data              = filebase64("userdata.sh")
+  tag_specifications {
+    resource_type = "instance"
 
-  tags = {
-    Name = "demo-instance-1"
+    tags = {
+      Name = "${var.name}-instance-asg"
+    }
+  }
+
+  user_data = filebase64("userdata.sh")
+}
+
+# asg
+resource "aws_autoscaling_group" "demo-asg" {
+  name_prefix = "${var.name}-asg-"
+  vpc_zone_identifier = [aws_subnet.demo-subnet-public-2a.id, aws_subnet.demo-subnet-public-2b.id]
+  desired_capacity   = 2
+  max_size           = 5
+  min_size           = 2
+  target_group_arns = [aws_lb_target_group.demo-target-group.arn]
+
+  launch_template {
+    id      = aws_launch_template.demo_launch_template.id
+    version = "$Latest"
   }
 }
 
+# ALB
 
+# target group
+resource "aws_lb_target_group" "demo-target-group" {
+  name     = "${var.name}-target-group"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.demo-vpc.id
+}
+
+
+# alb
+resource "aws_lb" "demo-alb" {
+  name               = "${var.name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.allow_80.id]
+  subnets            = [aws_subnet.demo-subnet-public-2a.id, aws_subnet.demo-subnet-public-2b.id]
+
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+# listener
+resource "aws_lb_listener" "demo_listener" {
+  load_balancer_arn = aws_lb.demo-alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.demo-target-group.arn
+  }
+}
